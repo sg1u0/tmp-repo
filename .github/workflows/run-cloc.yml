@@ -1,0 +1,106 @@
+name: Run CLOC and Deploy to GitHub Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      repos-owner:
+        description: リポジトリのオーナーアカウント名
+        required: true
+        default: sg1u0
+        type: string
+      repos-name:
+        description: リポジトリ名
+        required: true
+        default: MDTest
+        type: string
+      branch-name:
+        description: ブランチ名
+        required: true
+        default: main
+        type: string
+      share-mode:
+        description: |
+          true: Artifact, false: GitHub Pages
+        required: true
+        default: true
+        type: boolean
+
+# GitHub Pagesへのデプロイに必要な権限
+permissions:
+  contents: read
+  pages: write      # GitHub Pagesへの書き込み権限
+  id-token: write   # デプロイ時のOIDC認証用
+
+# 同時実行によるデプロイ競合を防止
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  cloc:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      # 指定リポジトリのチェックアウト
+      - name: Checkout specified repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.inputs.repos-owner }}/${{ github.event.inputs.repos-name }}
+          ref: ${{ github.event.inputs.branch-name }}
+          path: ${{ github.event.inputs.repos-name }}/
+
+      # セットアップ(CLOCインストール＆成果物ディレクトリ作成)
+      - name: Preparation (Install CLOC, etc)
+        run: |
+          sudo apt-get update && sudo apt-get install -y cloc
+          mkdir output-cloc
+
+      # CLOC実行(Markdown形式でファイルとJob Summaryに出力)
+      - name: Run CLOC
+        run: |
+          cloc ./ --by-file --md --out=output-cloc/result.md
+          cat output-cloc/result.md >> $GITHUB_STEP_SUMMARY
+
+      # Pandocの実行(MD => HTML生成)
+      - name: Convert Markdown to HTML using Pandoc
+        uses: docker://pandoc/core:latest
+        with:
+          args: >-
+            output-cloc/result.md
+            --output=output-cloc/index.html
+            --standalone
+          
+      # CLOC成果物(HTML)をアップロード
+      - name: Upload HTML documents as artifact
+        if: ${{ github.event.inputs.share-mode == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          path: output-cloc/index.html
+          archive: false
+
+      # GitHub Pagesセットアップ
+      - name: Setup Pages
+        if: ${{ github.event.inputs.share-mode == 'false' }}
+        uses: actions/configure-pages@v6
+
+      # CLOC成果物(HTML)をアップロード(GitHub Pages用)
+      - name: Upload artifact for GitHub Pages
+        if: ${{ github.event.inputs.share-mode == 'false' }}
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: './output-cloc'
+
+      # GitHub Pagesにデプロイ実行
+      - name: Deploy to GitHub Pages
+        id: deployment
+        if: ${{ github.event.inputs.share-mode == 'false' }}
+        uses: actions/deploy-pages@v5
+
+      # ディレクトリ＆ファイル一覧をログ出力(ワークフロー成否に関わらず実行)
+      - name: Display files and directories recursively
+        if: ${{ always() }}
+        run: ls -R 
